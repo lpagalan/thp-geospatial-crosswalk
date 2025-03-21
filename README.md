@@ -92,7 +92,6 @@ Geospatial Crosswalk/
 ├── Figures/
 ├── Geospatial Crosswalk.Rproj
 ├── Images/
-├── README/
 └── Tables/
     ├── da16_phdz24_crosswalk - ver. YYYY-MM-DD.csv
     ├── da16_lha25_crosswalk  - ver. YYYY-MM-DD.csv
@@ -163,7 +162,6 @@ Geospatial Crosswalk/
 ├── Figures/
 ├── Geospatial Crosswalk.Rproj
 ├── Images/
-├── README/
 └── Tables/
 ```
 
