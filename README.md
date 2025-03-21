@@ -120,7 +120,6 @@ DA linkages to CD, CSD, PHDZ, and LHA were performed using geographic data and s
 | PHDZ | Feb. 2024 | 2016 | Character | PHDZ24 | Peel Health Data Zone unique identifier. |
 | PHDZ | Feb. 2024 | 2016 | Character | PHDZMUNICIPALITY24 | Peel Health Data Zone municipality (census subdivision name). |
 | PSG | Feb. 2025 | 2016 | Character | LHA25 | Local health area. |
-: {.striped tbl-colwidths="[5, 9, 12, 8, 14, 52]"}
 
 ## Postal Code Crosswalk
 
@@ -148,7 +147,6 @@ Postal codes span an area and can span multiple census geographies. The PCCF fil
 | PHDZ | Feb. 2024 | 2016 | Character | PHDZ24 | Peel Health Data Zone unique identifier. |
 | PHDZ | Feb. 2024 | 2016 | Character | PHDZMUNICIPALITY24 | Peel Health Data Zone municipality (census subdivision name). |
 | PSG | Feb. 2025 | 2016 | Character | LHA25 | Local health area. |
-: {.striped tbl-colwidths="[5, 9, 12, 8, 14, 52]"}
 
 ## Local Health Area Boundary File Locations
 
@@ -203,7 +201,7 @@ PCCF differs from PCCF+. Whereas the PCCF has a single link indicator variable, 
 
 Census Boundary Files depict the boundaries of all standard geographic areas established for the purpose of disseminating census data. The 2021 Census Boundary file can be linked to all higher-level geographic areas using its DGUID and the new 2021 Dissemination Geographies Relationship File. The 2016 Census Boundary files includes the unique identifiers, names and types (where applicable) of all higher-level geographic areas available at time of release.
 
-![Hierarchy of standard geographic areas for dissemination.](../Images/hierarchy-of-standard-geographic-areas.png){width=85%}
+![Hierarchy of standard geographic areas for dissemination.](Images/hierarchy-of-standard-geographic-areas.png)
 
 ## Peel Health Data Zones
 
