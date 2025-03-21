@@ -9,6 +9,7 @@ format:
     toc-location: right
     toc-title: Table of Contents
     df-print: kable
+    embed-resources: true
 editor: source
 ---
 
