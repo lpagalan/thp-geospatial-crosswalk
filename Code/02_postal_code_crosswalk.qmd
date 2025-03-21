@@ -1,0 +1,989 @@
+---
+title: "Postal Code Crosswalk"
+author: Lief Pagalan
+date: today
+date-format: long
+format:
+  html:
+    toc: true
+    toc-location: right
+    toc-title: Table of Contents
+    df-print: kable
+editor: source
+---
+
+## Load Libraries
+
+```{r}
+# Load libraries
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(ggspatial)
+library(plotly)
+library(skimr)
+library(leaflet)
+library(mapview)
+
+# Get run time
+
+time_start <- proc.time()
+```
+
+## Load Data
+
+```{r}
+# Rename geo variables except geometry variable
+
+rename_geo <- function(geo, prefix, suffix) {
+  names(geo) <- if_else(seq_along(names(geo)) < length(names(geo)),
+                         paste0(prefix, "_", toupper(names(geo)), suffix),
+                         names(geo))
+}
+
+# Load PCCF postal codes
+
+dat_pccf_21 <- file.path("../Data/Original/PCCF 2022/PCCF_FCCP_V2212_2021.txt") |> 
+  read_fwf(fwf_widths(c( 6,  3, 2,  4, 7, 70, 3, 3,  3,  1, 7,
+                         2,  4, 5,  4, 1,  8, 3, 1, 11, 13, 1,
+                         1, 30, 1,  1, 8,  8, 1, 3,  1,  1),
+                      c("Postal_code",
+                        "FSA",
+                        "PR",
+                        "CDuid",
+                        "CSDuid",
+                        "CSDname",
+                        "CSDtype",
+                        "CCScode",
+                        "SAC",
+                        "SACtype",
+                        "CTname",
+                        "ER",
+                        "DPL",
+                        "FED13uid",
+                        "POP_CNTR_RA",
+                        "POP_CNTR_RA_type",
+                        "DAuid",
+                        "Dissemination block",
+                        "Rep_Pt_Type",
+                        "LAT",
+                        "LONG",
+                        "SLI",
+                        "PCtype",
+                        "Comm_Name",
+                        "DMT",
+                        "H_DMT",
+                        "Birth_Date",
+                        "Ret_Date",
+                        "PO",
+                        "QI",
+                        "Source",
+                        "POP_CNTR_RA_SIZE_CLASS")),
+           col_types = str_c(c(rep("c", 19),
+                               rep("n",  2),
+                               rep("c",  5),
+                               rep("c",  6)),
+                             collapse = ""))
+
+names(dat_pccf_21) <- paste0("PCCF_",
+                             toupper(str_replace_all(names(dat_pccf_21), "_", "")),
+                             "21")
+
+# Load StatCan 2021 census division
+
+geo_cd_21 <- file.path("../Data/Original/Census Divisions 2021/lcd_000b21a_e.shp") |> 
+  st_read()
+
+names(geo_cd_21) <- rename_geo(geo_cd_21, "STATCAN", "21")
+
+# Load StatCan 2021 census subdivisions
+
+geo_csd_21 <- file.path("../Data/Original/Census Subdivisions 2021/lcsd000b21a_e.shp") |> 
+  st_read()
+
+names(geo_csd_21) <- rename_geo(geo_csd_21, "STATCAN", "21")
+
+# Load StatCan 2021 dissemination areas
+
+geo_da_21 <- file.path("../Data/Original/Dissemination Areas 2021/lda_000b21a_e.shp") |> 
+  st_read()
+
+names(geo_da_21) <- rename_geo(geo_da_21, "STATCAN", "21")
+
+# Load StatCan 2016 dissemination areas
+
+geo_da_16 <- file.path("../Data/Original/Dissemination Areas 2016/lda_000b16a_e.shp") |> 
+  st_read()
+
+names(geo_da_16) <- rename_geo(geo_da_16, "STATCAN", "16")
+
+# Load Peel Health Data Zones
+
+geo_phdz_24 <- file.path("../Data/Original/Peel Health Data Zones 2024",
+                      "Peel Health Data Zones.gdb") |> 
+  st_read()
+
+names(geo_phdz_24) <- rename_geo(geo_phdz_24, "PHDZ", "24")
+
+# Load Local Health Areas
+
+geo_lha_25 <- file.path("../Data/Clean/Local Health Area 2025/",
+                        "local_health_area_2025.rds") |> 
+  read_rds() |> 
+  st_make_valid()
+
+rm(rename_geo)
+```
+
+## Process Spatial Data
+
+```{r}
+# Set consistent coordinate reference system
+
+crs_26917 <- "EPSG:26917"
+
+set_crs <- function(geo) {
+  if (st_crs(geo) != st_crs(crs_26917)) {
+    geo <- st_transform(geo, st_crs(crs_26917))
+  }
+  return(geo)
+}
+
+geo_cd_21   <- set_crs(geo_cd_21)
+geo_csd_21  <- set_crs(geo_csd_21)
+geo_da_21   <- set_crs(geo_da_21)
+geo_da_16   <- set_crs(geo_da_16)
+
+geo_phdz_24 <- set_crs(geo_phdz_24)
+geo_lha_25  <- set_crs(geo_lha_25)
+
+# Turn off S2
+
+sf_use_s2(FALSE)
+
+# Filter Peel CD
+
+geo_cd_21_peel <- filter(geo_cd_21, STATCAN_CDUID21 == "3521")
+
+# Filter Peel CSD
+
+geo_csd_21_peel <- geo_csd_21 |> 
+  filter(STATCAN_CSDUID21 %in% c("3521005",  # Mississauga
+                                 "3521010",  # Brampton
+                                 "3521024")) # Caledon
+```
+
+## Geo-Reference PCCF
+
+```{r rows.print=50}
+# PCCF
+
+dat_pccf_21 <- dat_pccf_21 |> 
+  
+  # Filter single link indicator
+  
+  filter(PCCF_SLI21 == "1") |> 
+  
+  # Select variables of interest
+  
+  select(PCCF_POSTALCODE21,
+         PCCF_FSA21,
+         PCCF_CDUID21,
+         PCCF_CSDUID21,
+         PCCF_CSDNAME21,
+         PCCF_DAUID21,
+         PCCF_LAT21,
+         PCCF_LONG21,
+         PCCF_SLI21,
+         PCCF_QI21) |> 
+  
+  # Duplicate coordinates for georeferencing
+  
+  mutate(PCCF_LAT21_GEO  = PCCF_LAT21,
+         PCCF_LONG21_GEO = PCCF_LONG21)
+
+# Convert PCCF postal codes to geographic object
+
+geo_pccf_21 <- st_as_sf(dat_pccf_21,
+                        coords = c("PCCF_LONG21_GEO", "PCCF_LAT21_GEO"),
+                        crs    = st_crs("EPSG:4269")) |> 
+  set_crs()
+
+rm(dat_pccf_21)
+
+# Filter PCCF postal codes within Peel CD
+
+geo_pccf_21_peel <- filter(geo_pccf_21, PCCF_CDUID21 == "3521")
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_peel, colour = "green") +
+    geom_sf(data = geo_cd_21_peel,   colour = "red",  fill = NA, linewidth = 1) +
+    geom_sf(data = geo_lha_25,       colour = "blue", fill = NA)
+)
+
+# Filter PCCF postal codes within LHA
+
+geo_pccf_21_lha <- st_filter(geo_pccf_21, geo_lha_25)
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_lha, colour = "green") +
+    geom_sf(data = geo_cd_21_peel,   colour = "red",  fill = NA, linewidth = 1) +
+    geom_sf(data = geo_lha_25, colour = "blue", fill = NA)
+)
+
+# Check that postal codes are unique within each PCCF cut
+
+length(unique(geo_pccf_21_peel$PCCF_POSTALCODE21)) == nrow(geo_pccf_21_peel)
+length(unique(geo_pccf_21_lha$PCCF_POSTALCODE21))  == nrow(geo_pccf_21_lha)
+
+# Bind rows
+
+geo_pccf_21 <- bind_rows(
+  
+  geo_pccf_21_peel,
+  
+  # Remove Peel postal code duplicates from geo_pccf_21_lha in geo_pccf_21_peel
+  
+  geo_pccf_21_lha |> 
+    filter(!(PCCF_POSTALCODE21 %in% geo_pccf_21_peel$PCCF_POSTALCODE21)))
+
+# Check that each postal code is unique
+
+n_pc <- length(unique(geo_pccf_21$PCCF_POSTALCODE21))
+
+length(unique(geo_pccf_21$PCCF_POSTALCODE21)) == nrow(geo_pccf_21)
+
+# Check missingness
+
+geo_pccf_21 |> 
+  st_drop_geometry() |> 
+  skim()
+
+# Count PCCF postal codes in Peel CD by CSD
+
+tbl_pccf_21_pc <- geo_pccf_21 |> 
+  st_drop_geometry() |> 
+  select(PCCF_CDUID21,
+         PCCF_CSDUID21,
+         PCCF_CSDNAME21,
+         PCCF_POSTALCODE21) |>
+  unique() |> 
+  group_by(PCCF_CDUID21,
+           PCCF_CSDUID21,
+           PCCF_CSDNAME21) |> 
+  summarise(N_PC = n(), .groups = "drop")
+
+tbl_pccf_21_pc
+
+tbl_pccf_21_pc_peel <- tbl_pccf_21_pc |> 
+  filter(PCCF_CDUID21 == "3521")
+
+tbl_pccf_21_pc_peel
+
+tbl_pccf_21_pc_peel |> 
+  group_by(PCCF_CDUID21) |> 
+  summarise(N_PC = sum(N_PC))
+
+# Count PCCF dissemination areas in Peel CD by CSD (expected n: 1746)
+
+tbl_pccf_21_da <- geo_pccf_21 |> 
+  st_drop_geometry() |> 
+  select(PCCF_CDUID21,
+         PCCF_CSDUID21,
+         PCCF_CSDNAME21,
+         PCCF_DAUID21) |>
+  unique() |> 
+  group_by(PCCF_CDUID21,
+         PCCF_CSDUID21,
+         PCCF_CSDNAME21) |>
+  summarise(N_DA = n(), .groups = "drop")
+
+tbl_pccf_21_da
+
+tbl_pccf_21_da_peel <- tbl_pccf_21_da |> 
+  filter(PCCF_CDUID21 == "3521")
+
+tbl_pccf_21_da_peel
+
+tbl_pccf_21_da_peel |> 
+  group_by(PCCF_CDUID21) |> 
+  summarise(N_DA = sum(N_DA))
+```
+
+## Leaflet Maps
+
+```{r rows.print=50}
+# Map style variables
+
+lft_color_red    <- "#d12771"
+lft_color_blue   <- "#4589ff"
+lft_color_purple <- "#8a3ffc"
+
+lft_weight_poly <- 2
+
+# Map of postal codes inside Peel
+
+wgs_cd_21_peel   <- st_transform(geo_cd_21_peel,   st_crs("EPSG:4326"))
+wgs_csd_21_peel  <- st_transform(geo_csd_21_peel,  st_crs("EPSG:4326"))
+wgs_pccf_21_peel <- st_transform(geo_pccf_21_peel, st_crs("EPSG:4326"))
+
+bnd_peel <- wgs_cd_21_peel |>
+  st_bbox() |>
+  as.character()
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  fitBounds(lng1 = bnd_peel[1],
+            lat1 = bnd_peel[2],
+            lng2 = bnd_peel[3],
+            lat2 = bnd_peel[4]) |>
+  
+  # Peel CD
+  
+  addPolygons(
+    data        = wgs_cd_21_peel,
+    weight      = lft_weight_poly,
+    color       = lft_color_blue,
+    fillOpacity = 0.1) |> 
+  
+  # Postal codes
+  
+  addCircleMarkers(
+    data         = wgs_pccf_21_peel,
+    radius       = 1,
+    fillColor    = lft_color_red,
+    stroke       = FALSE) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            colors   = lft_color_blue,
+            labels   = wgs_cd_21_peel$STATCAN_CDNAME21,
+            title    = "2021 Census Division",
+            opacity  = 1
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-postal-codes-peel.png")
+```
+
+```{r rows.print=50}
+# Map of postal codes in LHA
+
+wgs_lha_25_peel <- st_transform(geo_lha_25,      st_crs("EPSG:4326"))
+wgs_pccf_21_lha <- st_transform(geo_pccf_21_lha, st_crs("EPSG:4326"))
+
+pal <- colorFactor(
+  palette = "Accent",
+  domain = wgs_lha_25_peel$PSG_LHA25)
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # LHA
+  
+  addPolygons(
+    data        = wgs_lha_25_peel,
+    weight      = lft_weight_poly,
+    color       = ~ pal(PSG_LHA25),
+    fillOpacity = 0.25) |> 
+  
+  # Postal codes
+  
+  addCircleMarkers(
+    data         = wgs_pccf_21_lha,
+    radius       = 1,
+    fillColor    = lft_color_red,
+    stroke       = FALSE) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            pal      = pal,
+            values   = wgs_lha_25_peel$PSG_LHA25,
+            title    = "2025 Local Health Areas",
+            opacity  = 0.75
+  )
+
+p
+
+mapshot2(p, file = "../Figures/map-postal-codes-lha.png")
+```
+
+```{r rows.print=50}
+# Map of Peel Health Data Zones
+
+wgs_phdz_24 <- st_transform(geo_phdz_24, st_crs("EPSG:4326"))
+
+wgs_phdz_24 <- wgs_phdz_24 |> 
+  mutate(PHDZ_MUNICIPALITY24 = paste(PHDZ_MUNICIPALITY24, "PHDZs")) |> 
+  mutate(PHDZ_MUNICIPALITY24 = factor(PHDZ_MUNICIPALITY24,
+                                      levels = c("Caledon PHDZs",
+                                                 "Brampton PHDZs",
+                                                 "Mississauga PHDZs")))
+
+pal <- colorFactor(
+  palette = "Accent",
+  domain  = wgs_phdz_24$PHDZ_MUNICIPALITY24)
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  fitBounds(lng1 = bnd_peel[1],
+            lat1 = bnd_peel[2],
+            lng2 = bnd_peel[3],
+            lat2 = bnd_peel[4]) |>
+  
+  # Peel Health Data Zones
+  
+  addPolygons(
+    data        = wgs_phdz_24,
+    weight      = lft_weight_poly,
+    color       = ~ pal(PHDZ_MUNICIPALITY24),
+    fillOpacity = 0.25) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            pal      = pal,
+            values   = wgs_phdz_24$PHDZ_MUNICIPALITY24,
+            title    = "2024 Peel Health Data Zones",
+            opacity  = 0.75
+  )
+
+p
+
+mapshot2(p, file = "../Figures/map-boundary-phdz.png")
+```
+
+```{r rows.print=50}
+# Map of local health areas
+
+wgs_lha_25_peel <- st_transform(wgs_lha_25_peel, st_crs("EPSG:4326"))
+
+pal <- colorFactor(
+  palette = "Accent",
+  domain = wgs_lha_25_peel$PSG_LHA25)
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # Peel Health Data Zones
+  
+  addPolygons(
+    data        = wgs_lha_25_peel,
+    weight      = lft_weight_poly,
+    color       = ~ pal(PSG_LHA25),
+    fillOpacity = 0.25) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            pal      = pal,
+            values   = wgs_lha_25_peel$PSG_LHA25,
+            title    = "2025 Local Health Areas",
+            opacity  = 0.75
+  )
+
+p
+
+mapshot2(p, file = "../Figures/map-boundary-lha.png")
+```
+
+```{r rows.print=50}
+# Clean environment
+
+rm(list = ls(pattern = "^(tbl|bnd|wgs|pal|lft).*|.*(peel|lha)$"), set_crs, p)
+```
+
+## Link PCCF to CD 2021
+
+```{r rows.print=50}
+# Census division
+
+geo_cd_21 <- geo_cd_21 |> 
+
+  # Select variables of interest
+  
+  select(STATCAN_CDUID21, STATCAN_CDNAME21)
+
+# Join Peel postal codes to 2021 CD
+
+geo_pccf_21_cd_21 <- st_join(geo_pccf_21,
+                             geo_cd_21,
+                             join = st_intersects,
+                             left = TRUE)
+
+# All postal codes assigned to 2021 CD (i.e., no missing StatCan data)
+
+st_drop_geometry(geo_pccf_21_cd_21) |> skim()
+
+# Compare PCCF vs StatCan CD
+
+geo_pccf_21_cd_21 |> 
+  st_drop_geometry() |> 
+  group_by(PCCF_CDUID21,
+           STATCAN_CDUID21,
+           STATCAN_CDNAME21) |> 
+  summarise(N_PC = n(), .groups = "drop")
+
+# Plot to confirm PCCF geo-referencing
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_cd_21, colour = "green") +
+    geom_sf(data = filter(geo_cd_21, STATCAN_CDUID21 %in% geo_pccf_21_cd_21$PCCF_CDUID21),
+            colour = "red", fill = NA, linewidth = 1)
+)
+```
+
+## Link PCCF to CSD 2021
+
+```{r rows.print=50}
+# Census subdivision
+
+geo_csd_21 <- geo_csd_21 |> 
+
+  # Select variables of interest
+  
+  select(STATCAN_CSDUID21, STATCAN_CSDNAME21)
+
+# Join Peel postal codes to 2021 CSD
+
+geo_pccf_21_csd_21 <- st_join(geo_pccf_21,
+                              geo_csd_21,
+                              join = st_intersects,
+                              left = TRUE)
+
+# All postal codes assigned to 2021 CSD (i.e., no missing StatCan data)
+
+st_drop_geometry(geo_pccf_21_csd_21) |> skim()
+
+# Compare PCCF vs StatCan CSD
+
+geo_pccf_21_csd_21 |> 
+  st_drop_geometry() |> 
+  group_by(PCCF_CSDUID21,
+           PCCF_CSDNAME21,
+           STATCAN_CSDUID21,
+           STATCAN_CSDNAME21) |> 
+  summarise(N_PC = n(), .groups = "drop")
+
+# Plot to confirm PCCF geo-referencing
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_csd_21, colour = "green") +
+    geom_sf(data = filter(geo_cd_21, STATCAN_CDUID21 %in% geo_pccf_21_csd_21$PCCF_CDUID21),
+            colour = "red", fill = NA, linewidth = 1) +
+    geom_sf(data = filter(geo_csd_21, STATCAN_CSDUID21 %in% geo_pccf_21_csd_21$STATCAN_CSDUID21),
+            colour = "blue", fill = NA)
+)
+```
+
+## Link PCCF to DA 2021
+
+```{r rows.print=50}
+# Census tract and dissemination area
+
+geo_da_21 <- geo_da_21 |> 
+
+  # Select variables of interest
+  
+  select(STATCAN_DAUID21)
+
+# Join Peel postal codes to 2016 DA
+
+geo_pccf_21_da_21 <- st_join(geo_pccf_21,
+                             geo_da_21,
+                             join = st_intersects,
+                             left = TRUE)
+
+# All postal codes assigned to 2021 DA (i.e., no missing StatCan data)
+
+st_drop_geometry(geo_pccf_21_da_21) |> skim()
+
+# Compare PCCF vs StatCan DA
+
+left_join(
+  geo_pccf_21_da_21 |> 
+    st_drop_geometry() |> 
+    mutate(PCCF_STATCAN_DAUID_MATCH = PCCF_DAUID21 == STATCAN_DAUID21) |> 
+    group_by(PCCF_CSDUID21,
+             PCCF_CSDNAME21,
+             PCCF_STATCAN_DAUID_MATCH) |> 
+    summarise(N_PC_MATCH = n(), .groups = "drop") |> 
+    arrange(PCCF_CSDUID21, desc(PCCF_STATCAN_DAUID_MATCH)),
+  geo_pccf_21_da_21 |> 
+    st_drop_geometry() |> 
+    group_by(PCCF_CSDUID21,
+             PCCF_CSDNAME21) |> 
+    summarise(N_PC = n(), .groups = "drop")
+  ) |> 
+  mutate(PCT_PC_MATCH = round(N_PC_MATCH / N_PC * 100, 1)) |> 
+  select(-N_PC)
+
+# Plot to confirm PCCF geo-referencing
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_da_21, colour = "green") +
+    geom_sf(data = filter(geo_cd_21, STATCAN_CDUID21 %in% geo_pccf_21_da_21$PCCF_CDUID21),
+            colour = "red", fill = NA, linewidth = 1) +
+    geom_sf(data = filter(geo_da_21, STATCAN_DAUID21 %in% geo_pccf_21_da_21$STATCAN_DAUID21),
+            colour = "blue", fill = NA)
+)
+```
+
+## Link PCCF to DA 2016
+
+```{r rows.print=50}
+# Census tract and dissemination area
+
+geo_da_16 <- geo_da_16 |> 
+
+  # Select variables of interest
+  
+  select(STATCAN_CDUID16,
+         STATCAN_CDNAME16,
+         STATCAN_CSDUID16,
+         STATCAN_CSDNAME16,
+         STATCAN_CTNAME16,
+         STATCAN_DAUID16)
+
+# Join Peel postal codes to 2016 DA
+
+geo_pccf_21_da_16 <- st_join(geo_pccf_21,
+                             geo_da_16,
+                             join = st_intersects,
+                             left = TRUE)
+
+# All postal codes assigned to 2016 DA (i.e., no missing StatCan data)
+
+st_drop_geometry(geo_pccf_21_da_16) |> skim()
+
+# Compare 2016 vs 2021 DA
+
+geo_pccf_21_da_16 |> 
+  st_drop_geometry() |> 
+  mutate(DAUID_2016_2021_MATCH = PCCF_DAUID21 == STATCAN_DAUID16) |> 
+  group_by(PCCF_CDUID21,
+           DAUID_2016_2021_MATCH) |> 
+  summarise(N_PC_MATCH = n(), .groups = "drop") |> 
+  arrange(desc(DAUID_2016_2021_MATCH)) |> 
+  mutate(PCT_PC_MATCH = round(N_PC_MATCH / sum(N_PC_MATCH) * 100, 1))
+
+left_join(
+  geo_pccf_21_da_16 |> 
+    st_drop_geometry() |> 
+    mutate(DAUID_2016_2021_MATCH = PCCF_DAUID21 == STATCAN_DAUID16) |> 
+    group_by(PCCF_CDUID21,
+             PCCF_CSDNAME21,
+             DAUID_2016_2021_MATCH) |> 
+    summarise(N_PC_MATCH = n(), .groups = "drop"),
+  geo_pccf_21_da_16 |> 
+    st_drop_geometry() |> 
+    group_by(PCCF_CDUID21,
+             PCCF_CSDNAME21) |> 
+    summarise(SUBTOTAL = n(), .groups = "drop")
+) |>
+  mutate(PCT_PC_MATCH = round(N_PC_MATCH / SUBTOTAL * 100, 1)) |> 
+  arrange(desc(PCCF_CSDNAME21), desc(DAUID_2016_2021_MATCH)) |> 
+  select(-SUBTOTAL)
+
+# Plot to confirm PCCF geo-referencing
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_da_16, colour = "green") +
+    geom_sf(data = filter(geo_cd_21, STATCAN_CDUID21 %in% geo_pccf_21_da_16$PCCF_CDUID21),
+            colour = "red", fill = NA, linewidth = 1) +
+    geom_sf(data = filter(geo_da_16, STATCAN_DAUID16 %in% geo_pccf_21_da_16$STATCAN_DAUID16),
+            colour = "blue", fill = NA)
+)
+```
+
+## Link PCCF to PHDZ 2024
+
+```{r rows.print=50}
+# Peel health data zone
+
+geo_phdz_24 <- geo_phdz_24 |> 
+
+  # Select variables of interest
+  
+  select(PHDZ_PHDZ24,
+         PHDZ_PHDZMUNICIPALITY24 = PHDZ_MUNICIPALITY24)
+
+# Join Peel postal codes to 2024 PHDZ
+
+geo_pccf_21_phdz_24 <- st_join(geo_pccf_21,
+                               geo_phdz_24,
+                               join = st_intersects,
+                               left = TRUE)
+
+# All non-Peel postal codes cannot be assigned to 2024 PHDZ
+
+st_drop_geometry(geo_pccf_21_phdz_24) |> 
+  filter(PCCF_CDUID21 != "3521") |> 
+  skim()
+
+# All Peel postal codes assigned to 2024 PHDZ (i.e., no missing PHDZ data)
+
+st_drop_geometry(geo_pccf_21_phdz_24) |> 
+  filter(PCCF_CDUID21 == "3521") |> 
+  skim()
+
+# Plot to confirm PCCF geo-referencing
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_phdz_24, colour = "green") +
+    geom_sf(data = filter(geo_cd_21, STATCAN_CDUID21 %in% geo_pccf_21_phdz_24$PCCF_CDUID21),
+            colour = "red", fill = NA, linewidth = 1) +
+    geom_sf(data = filter(geo_phdz_24, PHDZ_PHDZ24 %in% geo_pccf_21_phdz_24$PHDZ_PHDZ24),
+            colour = "blue", fill = NA)
+)
+```
+
+## Link PCCF to LHA 2025
+
+```{r rows.print=50}
+# Join postal codes to 2025 local health areas
+
+geo_pccf_21_lha_25 <- st_join(geo_pccf_21,
+                              geo_lha_25,
+                              join = st_intersects,
+                              left = TRUE)
+
+# All postal codes that can be assigned to 2025 local health areas
+
+st_drop_geometry(geo_pccf_21_lha_25) |> 
+  filter(!PCCF_CSDNAME21 %in% c("Caledon", "Brampton")) |> 
+  skim()
+
+# Plot to confirm PCCF geo-referencing
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_pccf_21_lha_25, colour = "green") +
+    geom_sf(data = filter(geo_cd_21, STATCAN_CDUID21 %in% geo_pccf_21_lha_25$PCCF_CDUID21),
+            colour = "red", fill = NA, linewidth = 1) +
+    geom_sf(data = filter(geo_lha_25, PSG_LHA25 %in% geo_pccf_21_lha_25$PSG_LHA25),
+            colour = "blue", fill = NA)
+)
+```
+
+## Link PCCF Linkages
+
+```{r rows.print=50}
+# Join PCCF with all census geographies
+
+dat_pc_crosswalk <- reduce(list(st_drop_geometry(geo_pccf_21_cd_21),
+                                st_drop_geometry(geo_pccf_21_csd_21),
+                                st_drop_geometry(geo_pccf_21_da_16),
+                                st_drop_geometry(geo_pccf_21_phdz_24),
+                                st_drop_geometry(geo_pccf_21_lha_25)),
+                           left_join,
+                           by = setdiff(names(geo_pccf_21), "geometry"))
+
+dat_pc_crosswalk |> skim()
+
+# Check all postal codes have been kept
+
+n_pc == length(unique(dat_pc_crosswalk$PCCF_POSTALCODE21))
+
+# Check that each postal code is unique
+
+length(unique(dat_pc_crosswalk$PCCF_POSTALCODE21)) == nrow(dat_pc_crosswalk)
+
+rm(list = ls(pattern = "^geo"))
+```
+
+## Prepare Data for Export
+
+```{r}
+# Select variables to keep
+
+dat_pc_crosswalk <- dat_pc_crosswalk |> 
+  select(
+    # PCCF variables
+
+    PCCF_POSTALCODE21,
+    PCCF_FSA21,
+    PCCF_SLI21,
+    PCCF_LAT21,
+    PCCF_LONG21,
+    
+    PCCF_CDUID21,
+    PCCF_CSDUID21,
+    PCCF_CSDNAME21,
+    PCCF_DAUID21,
+    
+    # StatCan boundary file variables
+    
+    STATCAN_CDNAME21,
+    
+    STATCAN_CDUID16,
+    STATCAN_CDNAME16,
+    STATCAN_CSDUID16,
+    STATCAN_CSDNAME16,
+    STATCAN_DAUID16,
+    
+    # Peel health data zone variables
+    
+    PHDZ_PHDZ24,
+    PHDZ_PHDZMUNICIPALITY24,
+    
+    # Local health area variables
+    
+    PSG_LHA25
+  )
+
+# Move variables
+
+dat_pc_crosswalk <- dat_pc_crosswalk |> 
+  relocate(STATCAN_CDNAME21, .after = PCCF_CDUID21)
+```
+
+## Data Quality Check
+
+```{r}
+#| column: body-outset
+
+# Check consistency between variables - PCCF CDUID link to StatCan CDNAME
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CDUID21, STATCAN_CDNAME21) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CDUID21)
+
+# Check consistency between variables - CSD within CD
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, STATCAN_CDNAME21, PCCF_CSDNAME21) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+
+dat_pc_crosswalk |> 
+  group_by(STATCAN_CSDUID16, STATCAN_CDNAME16, STATCAN_CSDNAME16) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(STATCAN_CSDUID16)
+
+# Check consistency between variables - PHDZ within CSD
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, STATCAN_CDNAME21, PCCF_CSDNAME21, PHDZ_PHDZMUNICIPALITY24) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, STATCAN_CDNAME16, STATCAN_CSDNAME16, PHDZ_PHDZMUNICIPALITY24) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+
+# Check consistency between variables - PHDZ within CSD across time
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, PCCF_CSDNAME21, STATCAN_CSDNAME16, PHDZ_PHDZMUNICIPALITY24) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+
+# Check consistency between variables - LHA within CSD
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, STATCAN_CDNAME21, PCCF_CSDNAME21, PSG_LHA25) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, STATCAN_CDNAME16, STATCAN_CSDNAME16, PSG_LHA25) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+
+# Check consistency between variables - LHA within CSD across time
+
+dat_pc_crosswalk |> 
+  group_by(PCCF_CSDUID21, PCCF_CSDNAME21, STATCAN_CSDNAME16, PSG_LHA25) |> 
+  summarise(N_PC = n(), .groups = "drop_last") |> 
+  arrange(PCCF_CSDUID21)
+```
+
+## Metadata
+
+```{r rows.print=50}
+# Prepare metadata
+
+dat_metadata <- tibble("VARIABLE" = names(dat_pc_crosswalk))
+
+names(dat_pc_crosswalk) <- str_replace(names(dat_pc_crosswalk), "^[^_]*_", "")
+
+tbl_metadata <- dat_metadata |> 
+  mutate(
+    
+    # Extract data sources
+    
+    SOURCE = str_extract(VARIABLE, "^[^_]*"),
+    
+    # Extract census geography
+    
+    CENSUS_GEOGRAPHY = paste0("20", str_extract(VARIABLE, "\\d{2}$")),
+    
+    # Census geography for PHDZ
+    
+    CENSUS_GEOGRAPHY = if_else(SOURCE == "PHDZ", "2016", CENSUS_GEOGRAPHY),
+    
+    # Census geography for LHA
+    
+    CENSUS_GEOGRAPHY = if_else(SOURCE == "PSG", "2016", CENSUS_GEOGRAPHY),
+    
+    # Strip source prefix
+    
+    VARIABLE = str_extract(VARIABLE, "(?<=_).*"))
+
+# Add variable type
+
+tbl_metadata <- bind_cols(tbl_metadata,
+                          tibble("TYPE" = sapply(dat_pc_crosswalk, typeof))) |> 
+  mutate(TYPE = str_to_title(if_else(TYPE == "double", "numeric", TYPE)))
+
+# Move variables
+
+tbl_metadata <- tbl_metadata |> 
+  relocate(VARIABLE, .after = CENSUS_GEOGRAPHY) |> 
+  relocate(TYPE, .after = CENSUS_GEOGRAPHY)
+
+tbl_metadata
+```
+
+## Export Data
+
+```{r}
+# Export crosswalk
+
+write_csv(dat_pc_crosswalk,
+          paste0("../Tables/postal_code_crosswalk - ver. ",
+                 format(Sys.Date(), "%Y-%m-%d"),
+                 ".csv"))
+
+# Elapsed run time
+
+hms::as_hms(round((proc.time() - time_start)["elapsed"]))
+
+rm(list = ls())
+```
