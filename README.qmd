@@ -228,7 +228,7 @@ PCCF differs from PCCF+. Whereas the PCCF has a single link indicator variable, 
 
 Census Boundary Files depict the boundaries of all standard geographic areas established for the purpose of disseminating census data. The 2021 Census Boundary file can be linked to all higher-level geographic areas using its DGUID and the new 2021 Dissemination Geographies Relationship File. The 2016 Census Boundary files includes the unique identifiers, names and types (where applicable) of all higher-level geographic areas available at time of release.
 
-![Hierarchy of standard geographic areas for dissemination.](../Images/hierarchy-of-standard-geographic-areas.png){width=85%}
+![Hierarchy of standard geographic areas for dissemination.](Images/hierarchy-of-standard-geographic-areas.png){width=85%}
 
 ### Peel Health Data Zones
 
