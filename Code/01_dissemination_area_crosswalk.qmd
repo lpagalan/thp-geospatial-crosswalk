@@ -1,0 +1,1812 @@
+---
+title: "Dissemination Area Crosswalk"
+author: Lief Pagalan
+date: today
+date-format: long
+format:
+  html:
+    toc: true
+    toc-location: right
+    toc-title: Table of Contents
+    df-print: kable
+editor: source
+---
+
+## Load Libraries
+
+```{r}
+# Load libraries
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(ggspatial)
+library(plotly)
+library(skimr)
+library(leaflet)
+library(mapview)
+
+# Get run time
+
+time_start <- proc.time()
+```
+
+## Load Data
+
+```{r}
+# Rename geo variables except geometry variable
+
+rename_geo <- function(geo, prefix, suffix) {
+  names(geo) <- if_else(seq_along(names(geo)) < length(names(geo)),
+                         paste0(prefix, "_", toupper(names(geo)), suffix),
+                         names(geo))
+}
+
+# Load StatCan 2021 census division
+
+geo_cd_21 <- file.path("../Data/Original/Census Divisions 2021",
+                       "lcd_000b21a_e.shp") |> 
+  st_read()
+
+names(geo_cd_21) <- rename_geo(geo_cd_21, "STATCAN", "21")
+
+geo_cd_21 <- geo_cd_21 |> 
+  select(STATCAN_CDUID21, STATCAN_CDNAME21, geometry)
+
+# Load StatCan 2021 census subdivisions
+
+geo_csd_21 <- file.path("../Data/Original/Census Subdivisions 2021/",
+                        "lcsd000b21a_e.shp") |> 
+  st_read()
+
+names(geo_csd_21) <- rename_geo(geo_csd_21, "STATCAN", "21")
+
+geo_csd_21 <- geo_csd_21 |> 
+  select(STATCAN_CSDUID21, STATCAN_CSDNAME21, geometry)
+
+# Load StatCan 2021 dissemination areas
+
+geo_da_21 <- file.path("../Data/Original/Dissemination Areas 2021",
+                       "lda_000b21a_e.shp") |> 
+  st_read()
+
+names(geo_da_21) <- rename_geo(geo_da_21, "STATCAN", "21")
+
+geo_da_21 <- geo_da_21 |> 
+  select(STATCAN_DAUID21, geometry)
+
+# Load StatCan 2016 dissemination areas
+
+geo_da_16 <- file.path("../Data/Original/Dissemination Areas 2016",
+                       "lda_000b16a_e.shp") |> 
+  st_read()
+
+names(geo_da_16) <- rename_geo(geo_da_16, "STATCAN", "16")
+
+geo_da_16 <- geo_da_16 |> 
+  select(STATCAN_DAUID16,
+         STATCAN_CDUID16,
+         STATCAN_CDNAME16,
+         STATCAN_CSDUID16,
+         STATCAN_CSDNAME16,
+         geometry)
+
+# Load Peel Health Data Zones
+
+geo_phdz_24 <- file.path("../Data/Original/Peel Health Data Zones 2024",
+                         "Peel Health Data Zones.gdb") |> 
+  st_read()
+
+names(geo_phdz_24) <- rename_geo(geo_phdz_24, "PHDZ", "24")
+
+geo_phdz_24 <- geo_phdz_24 |> 
+  select(PHDZ_PHDZ24, PHDZ_MUNICIPALITY24, Shape)
+
+# Load LHIN sub-regions
+
+geo_lhin_17 <- file.path("../Data/Original/LHIN Sub-Regions 2017",
+                         "LHIN_Sub_Regions_Cartographic_AUGUST_2017.gdb") |> 
+  st_read()
+
+names(geo_lhin_17) <- rename_geo(geo_lhin_17, "LHIN", "17")
+
+# Load LIHN names
+
+dat_lhin_17 <- file.path("../Data/Original/LHIN Sub-Regions 2017",
+                         "List_n14_by_Name_ID_Ontario_LHINs.xlsx") |> 
+  readxl::read_xlsx(skip = 1)
+
+names(dat_lhin_17) <- toupper(names(dat_lhin_17)) |> 
+  str_replace_all(" ", "_") |> 
+  paste0("17")
+
+# Add LIHN names to geo LIHN data
+
+geo_lhin_17 <- left_join(geo_lhin_17,
+                         dat_lhin_17, by = c("LHIN_LHIN17" = "LHIN_ID17"))
+
+geo_lhin_17 <- geo_lhin_17 |> 
+  select(LHIN_LHINID17     = LHIN_LHIN17,
+         LHIN_LHINSR17     = LHIN_SRUID17,
+         LHIN_LHINIDNAME17 = LHIN_NAME17,
+         LHIN_LHINSRNAME17 = LHIN_SR_NAME_ENG17,
+         Shape) |> 
+  mutate(LHIN_LHINID17 = str_pad(LHIN_LHINID17, width = 2, pad = "0"))
+
+rm(rename_geo, dat_lhin_17)
+```
+
+## Process Spatial Data
+
+```{r}
+# Set consistent coordinate reference system
+
+crs_26917 <- "EPSG:26917"
+
+set_crs <- function(geo) {
+  if (st_crs(geo) != st_crs(crs_26917)) {
+    geo <- st_transform(geo, st_crs(crs_26917))
+  }
+  return(geo)
+}
+
+geo_cd_21   <- set_crs(geo_cd_21)
+geo_csd_21  <- set_crs(geo_csd_21)
+geo_da_21   <- set_crs(geo_da_21)
+geo_da_16   <- set_crs(geo_da_16)
+
+geo_phdz_24 <- set_crs(geo_phdz_24)
+geo_lhin_17 <- set_crs(geo_lhin_17)
+
+# Turn off S2
+
+sf_use_s2(FALSE)
+
+# Filter Peel CD
+
+geo_cd_21_peel <- filter(geo_cd_21, STATCAN_CDUID21 == "3521")
+
+# Filter Peel CSD
+
+geo_csd_21_peel <- geo_csd_21 |> 
+  filter(STATCAN_CSDUID21 %in% c("3521005",  # Mississauga
+                                 "3521010",  # Brampton
+                                 "3521024")) # Caledon
+
+# Filter Mississauga Halton LIHN sub-regions
+
+geo_lhin_17_peel <- st_filter(geo_lhin_17, geo_cd_21, join = st_intersects)
+
+geo_lhin_17_peel <- geo_lhin_17_peel |> 
+  filter(LHIN_LHINIDNAME17 == "Mississauga Halton")
+```
+
+## DAs to PHDZ
+
+### Filter DA to Peel CD
+
+```{r}
+# Decode Dissemination Geography Unique Identifier
+
+geo_da_21 <- geo_da_21 |> 
+  mutate(CDUID = str_sub(STATCAN_DAUID21, 1, 4), .before = "geometry")
+
+# Filter 2021 DAs in Peel CD
+
+geo_da_21_peel <- geo_da_21 |> 
+  filter(CDUID == "3521") |> 
+  select(-CDUID)
+
+var_n_unique_da_21_peel <- length(unique(geo_da_21_peel$STATCAN_DAUID21))
+
+nrow(geo_da_21_peel) == var_n_unique_da_21_peel
+
+# Filter 2016 DAs in Peel CD
+
+geo_da_16_peel <- geo_da_16 |> 
+  filter(STATCAN_CDUID16 == "3521")
+
+var_n_unique_da_16_peel <- length(unique(geo_da_16_peel$STATCAN_DAUID16))
+
+nrow(geo_da_16_peel) == var_n_unique_da_16_peel
+```
+
+### 2021 DA to CD
+
+```{r}
+# Link DA to CD
+
+geo_da_21_peel <- st_join(geo_da_21_peel,
+                          geo_cd_21_peel,
+                          join = st_intersects,
+                          left = TRUE)
+
+# Check that every DA has been assigned to Peel CD
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDNAME21) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple CDs
+
+nrow(geo_da_21_peel) == var_n_unique_da_21_peel
+
+geo_da_21_peel$STATCAN_DAUID21[duplicated(geo_da_21_peel$STATCAN_DAUID21)]
+
+# Plot to confirm join
+
+ggplotly(
+  ggplot(data = geo_da_21_peel) +
+    geom_sf() +
+    geom_sf(data = geo_cd_21_peel,  colour = "red",  fill = NA, linewidth = 1) +
+    geom_sf(data = geo_csd_21_peel, colour = "blue", fill = NA)
+)
+```
+
+### 2021 DA to CSD
+
+```{r}
+# Link DA to CSD
+
+geo_da_21_peel <- st_join(geo_da_21_peel,
+                          st_buffer(geo_csd_21_peel, 10),
+                          join = st_within,
+                          left = TRUE)
+
+# Check that every DA has been assigned a Peel CSD
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDNAME21, STATCAN_CSDNAME21) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple CSDs
+
+nrow(geo_da_21_peel) == var_n_unique_da_21_peel
+
+geo_da_21_peel$STATCAN_DAUID21[duplicated(geo_da_21_peel$STATCAN_DAUID21)]
+
+# Plot to confirm join
+
+ggplotly(
+  ggplot() +
+    geom_sf(data = geo_cd_21_peel,  colour = "red",   fill = NA, linewidth = 2) +
+    geom_sf(data = geo_csd_21_peel, colour = "blue",  fill = NA, linewidth = 1) +
+    geom_sf(data = geo_da_21_peel,  colour = "green", fill = NA, linewidth = 0.5)
+)
+```
+
+```{r}
+# Plot to confirm join - Caledon CSD
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = filter(geo_csd_21_peel, STATCAN_CSDNAME21 == "Caledon"),
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = filter(geo_da_21_peel, STATCAN_CSDNAME21 == "Caledon"),
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+```
+
+```{r}
+# Plot to confirm join - Brampton CSD
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = filter(geo_csd_21_peel, STATCAN_CSDNAME21 == "Brampton"),
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = filter(geo_da_21_peel, STATCAN_CSDNAME21 == "Brampton"),
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+```
+
+```{r}
+# Plot to confirm join - Mississauga CSD
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = filter(geo_csd_21_peel, STATCAN_CSDNAME21 == "Mississauga"),
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = filter(geo_da_21_peel, STATCAN_CSDNAME21 == "Mississauga"),
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+```
+
+### 2021 DA to PHDZ
+
+```{r}
+# Link DA to PHDZ
+
+geo_da_21_peel <- st_join(geo_da_21_peel,
+                          st_buffer(geo_phdz_24, 10),
+                          join = st_within,
+                          left = TRUE)
+
+# Check that every DA has been assigned to a PHDZ
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDNAME21, STATCAN_CSDNAME21, PHDZ_MUNICIPALITY24) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple PHDZs
+
+nrow(geo_da_21_peel) == var_n_unique_da_21_peel
+
+geo_da_21_peel$STATCAN_DAUID21[duplicated(geo_da_21_peel$STATCAN_DAUID21)]
+
+# Plot to confirm join
+
+vec_phdz <- geo_phdz_24$PHDZ_PHDZ24
+
+p <- htmltools::tagList()
+
+for (i in vec_phdz) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_phdz_24, PHDZ_PHDZ24 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_21_peel, PHDZ_PHDZ24 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5) +
+      labs(title = i)
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+### 2016 DA to PHDZ
+
+```{r}
+# Link DA to PHDZ
+
+geo_da_16_peel <- st_join(geo_da_16_peel,
+                          st_buffer(geo_phdz_24, 100),
+                          join = st_within,
+                          left = TRUE)
+
+# Check that every DA has been assigned to a PHDZ
+
+geo_da_16_peel |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_16_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDNAME16, STATCAN_CSDNAME16, PHDZ_MUNICIPALITY24) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Identify DAs without PHDZs
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_csd_21_peel,
+            colour    = "red",
+            fill      = NA,
+            linewidth = 2) +
+        geom_sf(data      = geo_phdz_24,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = filter(geo_da_16_peel, is.na(PHDZ_PHDZ24)),
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+
+geo_da_16_peel_na <- geo_da_16_peel |> 
+  filter(is.na(PHDZ_PHDZ24)) |> 
+  select(-starts_with("PHDZ"))
+
+# Use st_intersects to assign PHDZ to DAs with missing PHDZ
+
+geo_da_16_peel_na <- st_join(geo_da_16_peel_na,
+                             geo_phdz_24,
+                             join    = st_intersects,
+                             left    = TRUE,
+                             largest = TRUE)
+
+st_drop_geometry(geo_da_16_peel_na) |> 
+  select(STATCAN_DAUID16,
+         STATCAN_CSDNAME16,
+         PHDZ_MUNICIPALITY24,
+         PHDZ_PHDZ24)
+
+# Combine 2016 DA data frames
+
+geo_da_16_peel <- geo_da_16_peel |> 
+  filter(!(STATCAN_DAUID16 %in% geo_da_16_peel_na$STATCAN_DAUID16))
+
+geo_da_16_peel <- bind_rows(geo_da_16_peel,
+                            geo_da_16_peel_na) |> 
+  arrange(STATCAN_DAUID16)
+
+rm(geo_da_16_peel_na)
+
+# Check that every DA has been assigned to a PHDZ
+
+geo_da_16_peel |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_16_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDNAME16, STATCAN_CSDNAME16, PHDZ_MUNICIPALITY24) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple PHDZs
+
+nrow(geo_da_16_peel) == var_n_unique_da_16_peel
+
+geo_da_16_peel$STATCAN_DAUID16[duplicated(geo_da_16_peel$STATCAN_DAUID16)]
+
+# Plot to confirm join
+
+p <- htmltools::tagList()
+
+for (i in vec_phdz) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_phdz_24, PHDZ_PHDZ24 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_16_peel, PHDZ_PHDZ24 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5) +
+      labs(title = i)
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+### Data Quality Check
+
+```{r rows.print=50}
+# Check for all DAs
+
+nrow(geo_da_21_peel) == var_n_unique_da_21_peel
+nrow(geo_da_16_peel) == var_n_unique_da_16_peel
+
+length(unique(geo_da_21_peel$STATCAN_DAUID21)) == var_n_unique_da_21_peel
+length(unique(geo_da_16_peel$STATCAN_DAUID16)) == var_n_unique_da_16_peel
+
+# Check for internal consistency
+
+geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDUID21,
+           STATCAN_CDNAME21,
+           STATCAN_CSDUID21,
+           STATCAN_CSDNAME21,
+           PHDZ_MUNICIPALITY24) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+geo_da_16_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDUID16,
+           STATCAN_CDNAME16,
+           STATCAN_CSDUID16,
+           STATCAN_CSDNAME16,
+           PHDZ_MUNICIPALITY24) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Compare number of DAs from 2016 to 2021
+
+full_join(
+  
+  # 2016
+  
+  geo_da_16_peel |> 
+    st_drop_geometry() |> 
+    group_by(STATCAN_CSDNAME16,
+             PHDZ_MUNICIPALITY24,
+             PHDZ_PHDZ24) |> 
+    summarise(N_DA16 = n(), .groups = "drop_last"),
+  
+  # 2021
+  
+  geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CSDNAME21,
+           PHDZ_MUNICIPALITY24,
+           PHDZ_PHDZ24) |> 
+  summarise(N_DA21 = n(), .groups = "drop_last"),
+  
+  by = c("STATCAN_CSDNAME16"   = "STATCAN_CSDNAME21",
+         "PHDZ_MUNICIPALITY24" = "PHDZ_MUNICIPALITY24",
+         "PHDZ_PHDZ24"         = "PHDZ_PHDZ24")
+)
+
+# Crosscheck from existing crosswalks
+
+dat_da_21_phdz <- file.path("../Data/Original/Peel Health Data Zones 2024/",
+                            "Data Dictionary.csv") |> 
+  read_csv(col_types = c("cccc")) |> 
+  select(-CTUID) |> 
+  arrange(CD, CSD, PHDZ, DAUID) |> 
+  as.data.frame()
+
+dat_da_21_peel <- st_drop_geometry(geo_da_21_peel) |> 
+  select(DAUID = STATCAN_DAUID21,
+         PHDZ  = PHDZ_PHDZ24,
+         CSD   = STATCAN_CSDNAME21,
+         CD    = STATCAN_CDNAME21) |> 
+  arrange(CD, CSD, PHDZ, DAUID) |> 
+  as.data.frame()
+
+all.equal(dat_da_21_phdz, dat_da_21_peel)
+
+if (isTRUE(all.equal(dat_da_21_phdz, dat_da_21_peel))) {
+  rm(dat_da_21_phdz, dat_da_21_peel)
+} else {
+  print("The data frames are NOT equal!")
+}
+```
+
+## Create LHA Boundaries
+
+```{r}
+# Use PSG crosswalk to define spatial boundaries of LHAs
+
+dat_da_16_psg <- file.path("../Data/Original/PSG Crosswalk DA-Local Health Area/",
+                            "PSG DA-LHA Mapping V.250210.xlsx") |> 
+  readxl::read_xlsx(sheet = 2, col_types = "text") |> 
+  as.data.frame()
+
+names(dat_da_16_psg) <- toupper(names(dat_da_16_psg))
+
+dat_da_16_psg <- dat_da_16_psg |> 
+  rename(PSG_DAUID16 = DA16UID,
+         PSG_LHA25   = LOCAL_HEALTH_AREA)
+
+# Get all LHA names
+
+vec_psg_lha <- unique(dat_da_16_psg$PSG_LHA25)
+
+# Select LHAs of interest
+
+vec_psg_lha <- vec_psg_lha[str_detect(vec_psg_lha, str_c(c("Mississauga",
+                                                           "Milton",
+                                                           "Halton",
+                                                           "Oakville",
+                                                           "South Etobicoke"),
+                                             collapse = "|"))]
+
+vec_psg_lha
+
+# Crosswalk between LHA and LHIN sub-region names
+
+dat_lhin_lha <- data.frame(
+  LHIN_LHINSRNAME17 = c("North West Mississauga",
+                        "East Mississauga",
+                        "South West Mississauga",
+                        "Milton",
+                        "Halton Hills",
+                        "Oakville",
+                        "South Etobicoke"),
+ PSG_LHA25 = c("Mississauga North West",
+               "Mississauga East",
+               "Mississauga South West",
+               "Milton-Halton Hills",
+               "Milton-Halton Hills",
+               "Oakville",
+               "Toronto South Etobicoke")
+)
+
+dat_lhin_lha
+```
+
+### Define LHA Boundaries
+
+```{r}
+# Select DAs within LHAs of interest
+
+dat_da_16_lha <- filter(dat_da_16_psg, PSG_LHA25 %in% vec_psg_lha)
+
+var_n_unique_da_16_lha <- length(unique(dat_da_16_lha$PSG_DAUID16))
+
+var_n_unique_da_16_lha
+
+geo_da_16_lha <- geo_da_16 |> 
+  filter(STATCAN_DAUID16 %in% dat_da_16_lha$PSG_DAUID16)
+```
+
+### Create LHA Boundaries
+
+```{r}
+# Use DAs within LHAs of interest to create LHA boundaries
+
+geo_da_16_lha <- left_join(geo_da_16_lha,
+                           dat_da_16_psg,
+                           by = c("STATCAN_DAUID16" = "PSG_DAUID16"))
+```
+
+### LHA vs. LHIN Sub-Region
+
+```{r}
+# Check overall LHAs
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lhin_17_peel,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_16_lha,
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+
+# Check individual LHAs
+
+p <- htmltools::tagList()
+
+for (i in seq_len(nrow(dat_lhin_lha))) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_lhin_17_peel,
+                            LHIN_LHINSRNAME17 == dat_lhin_lha[i, "LHIN_LHINSRNAME17"]),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_16_lha,
+                            PSG_LHA25 == dat_lhin_lha[i, "PSG_LHA25"]),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5,
+              aes(text = STATCAN_DAUID16)) +
+      labs(title = dat_lhin_lha[i, "PSG_LHA25"]),
+    tooltip = "text"
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+### Milton-Halton Hills LHA
+
+```{r}
+# Create LHA polygon for Milton-Halton Hills
+
+geo_lha_25_mhl <- geo_lhin_17 |> 
+  filter(LHIN_LHINSRNAME17 %in% c("Milton", "Halton Hills")) |> 
+  st_union() |> 
+  sfheaders::sf_remove_holes() |> 
+  st_as_sf() |> 
+  mutate(PSG_LHA25 = "Milton-Halton Hills") |> 
+  rename(Shape = x)
+
+plot(st_geometry(geo_lha_25_mhl))
+```
+
+### Mississauga East LHA
+
+```{r}
+# Create LHA polygon for Mississauga East
+
+geo_lha_25_met_1 <- geo_lhin_17 |> 
+  filter(LHIN_LHINSRNAME17 == "East Mississauga")
+
+plot(st_geometry(geo_lha_25_met_1))
+
+# Filter Mississauga East DAs outside of the East Mississauga LHIN sub-region
+
+geo_lha_25_met_2 <- geo_da_16_lha |> 
+  filter(PSG_LHA25 == "Mississauga East")
+
+geo_lha_25_met_2 <- st_join(geo_lha_25_met_2,
+                            st_buffer(geo_lhin_17_peel, 10),
+                            join = st_within,
+                            left = TRUE)
+
+plot(st_geometry(geo_lha_25_met_2))
+
+geo_lha_25_met_2 <- geo_lha_25_met_2 |> 
+  filter(is.na(LHIN_LHINSRNAME17))
+
+plot(st_geometry(geo_lha_25_met_2))
+
+# Combine DAs
+
+geo_lha_25_met_2 <- geo_lha_25_met_2 |> 
+  st_union() |> 
+  sfheaders::sf_remove_holes() |> 
+  st_as_sf()
+
+plot(st_geometry(geo_lha_25_met_2))
+
+# Combine with East Mississauga LHIN sub-region boundary
+
+geo_lha_25_met <- st_union(geo_lha_25_met_1,
+                           geo_lha_25_met_2) |> 
+  sfheaders::sf_remove_holes() |> 
+  st_as_sf() |> 
+  mutate(PSG_LHA25 = "Mississauga East") |> 
+  select(PSG_LHA25)
+
+plot(st_geometry(geo_lha_25_met))
+
+rm(geo_lha_25_met_1, geo_lha_25_met_2)
+```
+
+### Mississauga North West LHA
+
+```{r}
+# Create LHA polygon for Mississauga North West
+
+geo_lha_25_mnw_1 <- geo_lhin_17 |> 
+  filter(LHIN_LHINSRNAME17 == "North West Mississauga")
+
+plot(st_geometry(geo_lha_25_mnw_1))
+
+geo_lha_25_mnw_2 <- geo_da_16_peel |> 
+  filter(STATCAN_DAUID16 %in% c("35211702", "35211716")) |> 
+  st_union() |> 
+  sfheaders::sf_remove_holes() |> 
+  st_as_sf()
+
+plot(st_geometry(geo_lha_25_mnw_2))
+
+geo_lha_25_mnw <- st_union(geo_lha_25_mnw_1,
+                           geo_lha_25_mnw_2) |> 
+  sfheaders::sf_remove_holes() |> 
+  st_as_sf() |> 
+  mutate(PSG_LHA25 = "Mississauga North West") |> 
+  select(PSG_LHA25)
+
+plot(st_geometry(geo_lha_25_mnw))
+
+rm(geo_lha_25_mnw_1, geo_lha_25_mnw_2)
+```
+
+### Mississauga South West LHA
+
+```{r}
+# Create LHA polygon for Mississauga South West
+
+geo_lha_25_msw <- geo_lhin_17 |> 
+  filter(LHIN_LHINSRNAME17 == "South West Mississauga") |> 
+  mutate(PSG_LHA25 = "Mississauga South West") |> 
+  select(PSG_LHA25)
+
+plot(st_geometry(geo_lha_25_msw))
+```
+
+### Toronto South Etobicoke LHA
+
+```{r}
+# Create LHA polygon for Toronto South Etobicoke
+
+geo_lha_25_tse <- geo_lhin_17 |> 
+  filter(LHIN_LHINSRNAME17 == "South Etobicoke") |> 
+  mutate(PSG_LHA25 = "Toronto South Etobicoke") |> 
+  select(PSG_LHA25)
+
+plot(st_geometry(geo_lha_25_tse))
+```
+
+### Oakville LHA
+
+```{r}
+# Create LHA polygon for Oakville
+
+geo_lha_25_oak <- geo_lhin_17 |> 
+  filter(LHIN_LHINSRNAME17 == "Oakville") |> 
+  mutate(PSG_LHA25 = "Oakville") |> 
+  select(PSG_LHA25)
+
+plot(st_geometry(geo_lha_25_oak))
+```
+
+### Combine LHA Polygons
+
+```{r}
+# Combine LHA polygons
+
+geo_lha_25 <- do.call(rbind, list(geo_lha_25_met,
+                                  geo_lha_25_mhl,
+                                  geo_lha_25_mnw,
+                                  geo_lha_25_msw,
+                                  geo_lha_25_oak,
+                                  geo_lha_25_tse)) |> 
+  st_make_valid()
+
+# Check overall LHAs
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lha_25,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_16_lha,
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+
+# Check individual LHA polygons
+
+p <- htmltools::tagList()
+
+for (i in dat_lhin_lha$PSG_LHA25) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_lha_25, PSG_LHA25 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_16_lha, PSG_LHA25 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5,
+              aes(text = STATCAN_DAUID16)) +
+      labs(title = i),
+    tooltip = "text"
+  )
+}
+
+p
+
+rm(i, p, 
+   geo_lha_25_met,
+   geo_lha_25_mhl,
+   geo_lha_25_mnw,
+   geo_lha_25_msw,
+   geo_lha_25_oak,
+   geo_lha_25_tse)
+```
+
+## DAs to LHA
+
+### 2021 DA to LHA
+
+```{r}
+# Link DA to LHA using st_within - strict condition
+
+geo_da_21_lha_within <- st_join(geo_da_21,
+                                st_buffer(geo_lha_25, 100),
+                                join = st_within,
+                                left = FALSE)
+
+# Plot to confirm join
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lha_25,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_21_lha_within,
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+
+p <- htmltools::tagList()
+
+for (i in vec_psg_lha) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_lha_25, PSG_LHA25 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_21_lha_within, PSG_LHA25 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5) +
+      labs(title = i)
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+```{r}
+# Link DA to LHIN using st_intersects - more inclusive
+
+geo_da_21_lha_intersects <- st_join(geo_da_21,
+                                    geo_lha_25,
+                                    join = st_intersects,
+                                    left    = FALSE,
+                                    largest = TRUE)
+
+# Keep DAs only captured using st_intersects
+
+geo_da_21_lha_intersects <- geo_da_21_lha_intersects |> 
+  filter(!(STATCAN_DAUID21 %in% geo_da_21_lha_within$STATCAN_DAUID21))
+
+# Plot to confirm join
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lha_25,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_21_lha_intersects,
+            colour    = "red",
+            fill      = alpha("red", 0.25),
+            linewidth = 0.5)
+)
+
+p <- htmltools::tagList()
+
+for (i in vec_psg_lha) {
+  if (i %in% unique(geo_da_21_lha_intersects$PSG_LHA25)) {
+    p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_lha_25, PSG_LHA25 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_21_lha_intersects, PSG_LHA25 == i),
+              colour    = "red",
+              fill      = alpha("red", 0.25),
+              linewidth = 0.5,
+              aes(text  = STATCAN_DAUID21)) +
+      labs(title = i),
+    tooltip = "text"
+    )
+  }
+}
+
+p
+
+rm(i, p)
+```
+
+```{r}
+# Drop sub-regions that do not have missing DA linkages
+
+geo_da_21_lha_intersects <- geo_da_21_lha_intersects |> 
+  filter(!(PSG_LHA25 %in% c("Mississauga North West",
+                            "Mississauga East",
+                            "Milton-Halton Hills")))
+
+# Keep relevant DAs captured by st_intersect but not st_within
+
+p <- htmltools::tagList()
+
+for (i in vec_psg_lha) {
+  if (i %in% unique(geo_da_21_lha_intersects$PSG_LHA25)) {
+    p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_lha_25, PSG_LHA25 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_21_lha_intersects, PSG_LHA25 == i),
+              colour    = "red",
+              fill      = alpha("red", 0.25),
+              linewidth = 0.5,
+              aes(text  = STATCAN_DAUID21)) +
+      labs(title = i),
+    tooltip = "text"
+    )
+  }
+}
+
+p
+
+rm(i, p)
+
+geo_da_21_lha_intersects <- geo_da_21_lha_intersects |> 
+  filter(STATCAN_DAUID21 %in% c("35241046",
+                                "35201582"))
+
+# Verify results
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lha_25,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_21_lha_intersects,
+            colour    = "red",
+            fill      = alpha("red", 0.25),
+            linewidth = 0.5)
+)
+```
+
+```{r}
+# Combine geo_da_21_lha data frames
+
+geo_da_21_lha <- bind_rows(
+  mutate(geo_da_21_lha_within, JOIN = "Within"),
+  mutate(geo_da_21_lha_intersects, JOIN = "Intersect")
+) |> 
+  mutate(JOIN = factor(JOIN, levels = c("Within", "Intersect")))
+
+# Plot DAs by LHA
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lha_25,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_21_lha,
+             aes(colour = JOIN, fill = JOIN),
+              alpha      = 0.75,
+              linewidth  = 0.5) +
+    scale_color_brewer(palette = "Pastel2", drop = FALSE) +
+    scale_fill_brewer(palette  = "Pastel2", drop = FALSE)
+)
+
+p <- htmltools::tagList()
+
+for (i in vec_psg_lha) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data       = filter(geo_lha_25, PSG_LHA25 == i),
+              colour     = "blue",
+              fill       = NA,
+              linewidth  = 1) +
+      geom_sf(data       = filter(geo_da_21_lha, PSG_LHA25 == i),
+              aes(colour = JOIN, fill = JOIN),
+              alpha      = 0.75,
+              linewidth  = 0.5) +
+      scale_color_brewer(palette = "Pastel2", drop = FALSE) +
+      scale_fill_brewer(palette  = "Pastel2", drop = FALSE) +
+      labs(title = i)
+  )
+}
+
+p
+
+rm(i, p)
+
+# Drop variables
+
+geo_da_21_lha <- geo_da_21_lha |> 
+  select(-c(CDUID, JOIN))
+
+rm(geo_da_21_lha_within, geo_da_21_lha_intersects)
+
+# Check that no duplicate DAs that have been assigned to multiple LHA
+
+var_n_unique_da_21_lha <- length(unique(geo_da_21_lha$STATCAN_DAUID21))
+
+nrow(geo_da_21_lha) == var_n_unique_da_21_lha
+
+geo_da_21_lha$STATCAN_DAUID21[duplicated(geo_da_21_lha$STATCAN_DAUID21)]
+
+# Check that every DA has been assigned to an LHA
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  group_by(PSG_LHA25) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+```
+
+### 2021 DA to CD
+
+```{r}
+# Link DA to CD
+
+geo_da_21_lha <- st_join(geo_da_21_lha,
+                         geo_cd_21,
+                         join    = st_intersects,
+                         left    = TRUE,
+                         largest = TRUE)
+
+# Check that every DA has been assigned to a CD
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDNAME21) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple CDs
+
+nrow(geo_da_21_lha) == var_n_unique_da_21_lha
+
+geo_da_21_lha$STATCAN_DAUID21[duplicated(geo_da_21_lha$STATCAN_DAUID21)]
+
+# Plot to confirm CD join
+
+geo_cd_21_lha <- geo_cd_21 |> 
+  filter(STATCAN_CDUID21 %in% geo_da_21_lha$STATCAN_CDUID21)
+
+ggplotly(
+  ggplot(data = geo_da_21_lha) +
+    geom_sf() +
+    geom_sf(data      = geo_cd_21_lha,
+            colour    = "red",
+            fill      = NA,
+            linewidth = 1)
+)
+
+p <- htmltools::tagList()
+
+for (i in unique(geo_da_21_lha$STATCAN_CDNAME21)) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_cd_21_lha, STATCAN_CDNAME21 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_21_lha, STATCAN_CDNAME21 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5) +
+      labs(title = i)
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+
+### 2021 DA to CSD
+
+```{r}
+# Link DA to CSD
+
+geo_da_21_lha <- st_join(geo_da_21_lha,
+                          geo_csd_21,
+                          join    = st_intersects,
+                          left    = TRUE,
+                          largest = TRUE)
+
+# Check that every DA has been assigned to a CSD
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CSDNAME21) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple CSDs
+
+nrow(geo_da_21_lha) == var_n_unique_da_21_lha
+
+geo_da_21_lha$STATCAN_DAUID21[duplicated(geo_da_21_lha$STATCAN_DAUID21)]
+
+# Plot to confirm CSD join
+
+geo_csd_21_lha <- geo_csd_21 |> 
+  filter(STATCAN_CSDUID21 %in% geo_da_21_lha$STATCAN_CSDUID21)
+
+ggplotly(
+  ggplot(data = geo_da_21_lha) +
+    geom_sf() +
+    geom_sf(data      = geo_csd_21_lha,
+            colour    = "red",
+            fill      = NA,
+            linewidth = 1)
+)
+
+p <- htmltools::tagList()
+
+for (i in unique(geo_da_21_lha$STATCAN_CSDNAME21)) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_csd_21, STATCAN_CSDNAME21 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_21_lha, STATCAN_CSDNAME21 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5) +
+      labs(title = i)
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+### 2016 DA to LHA
+
+```{r}
+# Check that every DA has been assigned to an LHA
+
+geo_da_16_lha |> 
+  st_drop_geometry() |> 
+  skim()
+
+geo_da_16_lha |> 
+  st_drop_geometry() |> 
+  group_by(PSG_LHA25) |> 
+  summarise(N_DA = n(), .groups = "drop_last")
+
+# Check that no duplicate DAs that have been assigned to multiple LHA
+
+nrow(geo_da_16_lha) == var_n_unique_da_16_lha
+
+geo_da_16_lha$STATCAN_DAUID16[duplicated(geo_da_16_lha$STATCAN_DAUID16)]
+
+# Plot to confirm LHA join
+
+ggplotly(
+  ggplot() +
+    geom_sf(data      = geo_lha_25,
+            colour    = "blue",
+            fill      = NA,
+            linewidth = 1) +
+    geom_sf(data      = geo_da_16_lha,
+            colour    = "green",
+            fill      = alpha("green", 0.25),
+            linewidth = 0.5)
+)
+
+# Check individual LHAs
+
+p <- htmltools::tagList()
+
+for (i in dat_lhin_lha$PSG_LHA25) {
+  p[[i]] <- ggplotly(
+    ggplot() +
+      geom_sf(data = filter(geo_lha_25, PSG_LHA25 == i),
+              colour    = "blue",
+              fill      = NA,
+              linewidth = 1) +
+      geom_sf(data = filter(geo_da_16_lha, PSG_LHA25 == i),
+              colour    = "green",
+              fill      = alpha("green", 0.25),
+              linewidth = 0.5,
+              aes(text = STATCAN_DAUID16)) +
+      labs(title = i),
+    tooltip = "text"
+  )
+}
+
+p
+
+rm(i, p)
+```
+
+### Data Quality Check
+
+```{r rows.print=50}
+#| column: body-outset
+
+# Check for all DAs
+
+nrow(geo_da_21_lha) == var_n_unique_da_21_lha
+nrow(geo_da_16_lha) == var_n_unique_da_16_lha
+
+length(unique(geo_da_21_lha$STATCAN_DAUID21)) == var_n_unique_da_21_lha
+length(unique(geo_da_16_lha$STATCAN_DAUID16)) == var_n_unique_da_16_lha
+
+# Check for internal consistency
+
+geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDUID21,
+           STATCAN_CDNAME21,
+           STATCAN_CSDUID21,
+           STATCAN_CSDNAME21,
+           PSG_LHA25) |> 
+  summarise(N_DA = n(), .groups = "drop_last") |> 
+  arrange(STATCAN_CDNAME21,
+          STATCAN_CSDNAME21,
+          PSG_LHA25)
+```
+
+```{r rows.print=50}
+#| column: body-outset
+
+geo_da_16_lha |> 
+  st_drop_geometry() |> 
+  group_by(STATCAN_CDUID16,
+           STATCAN_CDNAME16,
+           STATCAN_CSDUID16,
+           STATCAN_CSDNAME16,
+           PSG_LHA25) |> 
+  summarise(N_DA = n(), .groups = "drop_last") |> 
+  arrange(STATCAN_CDNAME16,
+          STATCAN_CSDNAME16,
+          PSG_LHA25)
+
+# Compare number of DAs from 2016 to 2021
+
+full_join(
+  
+  # 2016
+  
+  geo_da_16_lha |> 
+    st_drop_geometry() |> 
+    group_by(STATCAN_CDNAME16,
+             STATCAN_CSDNAME16,
+             PSG_LHA25) |> 
+    summarise(N_DA16 = n(), .groups = "drop_last"),
+  
+  # 2021
+  
+  geo_da_21_lha |> 
+    st_drop_geometry() |> 
+    group_by(STATCAN_CDNAME21,
+             STATCAN_CSDNAME21,
+             PSG_LHA25) |> 
+    summarise(N_DA21 = n(), .groups = "drop_last"),
+  
+  by = c("STATCAN_CDNAME16"  = "STATCAN_CDNAME21",
+         "STATCAN_CSDNAME16" = "STATCAN_CSDNAME21",
+         "PSG_LHA25"         = "PSG_LHA25")
+)
+```
+
+## Export Data
+
+```{r}
+# Export 2016 DA to PHDZ crosswalk
+
+nrow(geo_da_16_peel) == var_n_unique_da_16_peel
+
+dat_da_16_peel <- geo_da_16_peel |> 
+  st_drop_geometry() |> 
+  rename_with(~ str_remove(., "^[^_]*_")) |> 
+  select(DAUID16,
+         CDUID16,
+         CDNAME16,
+         CSDUID16,
+         CSDNAME16,
+         PHDZ24,
+         MUNICIPALITY24)
+
+write_csv(dat_da_16_peel,
+          paste0("../Tables/da16_phdz24_crosswalk - ver. ",
+                 format(Sys.Date(), "%Y-%m-%d"),
+                 ".csv"))
+
+# Export 2021 DA to PHDZ crosswalk
+
+nrow(geo_da_21_peel) == var_n_unique_da_21_peel
+
+dat_da_21_peel <- geo_da_21_peel |> 
+  st_drop_geometry() |> 
+  rename_with(~ str_remove(., "^[^_]*_")) |> 
+  select(DAUID21,
+         CDUID21,
+         CDNAME21,
+         CSDUID21,
+         CSDNAME21,
+         PHDZ24,
+         MUNICIPALITY24)
+
+write_csv(dat_da_21_peel,
+          paste0("../Tables/da21_phdz24_crosswalk - ver. ",
+                 format(Sys.Date(), "%Y-%m-%d"),
+                 ".csv"))
+
+# Export 2016 DA to LHA crosswalk
+
+rm(dat_da_16_lha)
+
+nrow(geo_da_16_lha) == var_n_unique_da_16_lha
+
+dat_da_16_lha <- geo_da_16_lha |> 
+  st_drop_geometry() |> 
+  rename_with(~ str_remove(., "^[^_]*_")) |> 
+  select(DAUID16,
+         CDUID16,
+         CDNAME16,
+         CSDUID16,
+         CSDNAME16,
+         LHA25)
+  
+write_csv(dat_da_16_lha,
+          paste0("../Tables/da16_lha25_crosswalk - ver. ",
+                 format(Sys.Date(), "%Y-%m-%d"),
+                 ".csv"))
+
+# Export 2021 DA to LHA crosswalk
+
+nrow(geo_da_21_lha) == var_n_unique_da_21_lha
+
+dat_da_21_lha <- geo_da_21_lha |> 
+  st_drop_geometry() |> 
+  rename_with(~ str_remove(., "^[^_]*_")) |> 
+  select(DAUID21,
+         CDUID21,
+         CDNAME21,
+         CSDUID21,
+         CSDNAME21,
+         LHA25)
+
+write_csv(dat_da_21_lha,
+          paste0("../Tables/da21_lha25_crosswalk - ver. ",
+                 format(Sys.Date(), "%Y-%m-%d"),
+                 ".csv"))
+
+# Export LHA boundary file
+
+path_local_health_area_2025 <- file.path("../Data/Clean/Local Health Area 2025/",
+                                         "local_health_area_2025.shp")
+
+if (file.exists(path_local_health_area_2025)) {
+  file.remove(path_local_health_area_2025)
+}
+
+st_crs(geo_lha_25)
+
+st_write(geo_lha_25, path_local_health_area_2025)
+
+write_rds(geo_lha_25,
+          "../Data/Clean/Local Health Area 2025/local_health_area_2025.rds")
+```
+
+## Leaflet Maps
+
+```{r}
+# Map style variables
+
+lft_color_red    <- "#d12771"
+lft_color_blue   <- "#4589ff"
+lft_color_purple <- "#8a3ffc"
+lft_color_green  <- "#99d594"
+lft_color_orange <- "#fec44f"
+
+lft_weight_poly  <- 2
+
+# Options for saving Leaflet maps to png
+
+mapviewOptions(fgb = FALSE)
+
+# Layers
+
+wgs_cd_21_peel <- st_transform(geo_cd_21_peel, st_crs("EPSG:4326"))
+wgs_lha_25     <- st_transform(geo_lha_25,     st_crs("EPSG:4326"))
+wgs_phdz_24    <- st_transform(geo_phdz_24,    st_crs("EPSG:4326"))
+
+wgs_da_16_peel <- st_transform(geo_da_16_peel, st_crs("EPSG:4326"))
+wgs_da_16_lha  <- st_transform(geo_da_16_lha,  st_crs("EPSG:4326"))
+
+wgs_da_21_peel <- st_transform(geo_da_21_peel, st_crs("EPSG:4326"))
+wgs_da_21_lha  <- st_transform(geo_da_21_lha,  st_crs("EPSG:4326"))
+
+wgs_lhin_17_peel  <- st_transform(geo_lhin_17_peel,  st_crs("EPSG:4326"))
+
+# Bounding box
+
+bnd_peel <- wgs_cd_21_peel |>
+  st_bbox() |>
+  as.character()
+```
+
+### 2016 DA to PHDZ
+
+```{r}
+# 2016 DA and PHDZ
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  fitBounds(lng1 = bnd_peel[1],
+            lat1 = bnd_peel[2],
+            lng2 = bnd_peel[3],
+            lat2 = bnd_peel[4]) |>
+
+  # 2016 DA
+  
+  addPolygons(
+    data        = wgs_da_16_peel,
+    weight      = lft_weight_poly,
+    color       = lft_color_orange,
+    fillOpacity = 0.1) |> 
+  
+  # PHDZ
+  
+  addPolygons(
+    data        = wgs_phdz_24,
+    weight      = lft_weight_poly,
+    color       = lft_color_blue,
+    fillOpacity = 0) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            colors = c(lft_color_blue, lft_color_orange),
+            labels = c("2024 Peel Health Data Zones", "2016 Dissemination Areas"),
+            title    = "Geographic Units",
+            opacity  = 1
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-da-2016-peel-health-data-zone.png")
+```
+
+### 2021 DA to PHDZ
+
+```{r}
+# 2021 DA and PHDZ
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  fitBounds(lng1 = bnd_peel[1],
+            lat1 = bnd_peel[2],
+            lng2 = bnd_peel[3],
+            lat2 = bnd_peel[4]) |>
+  # 2021 DA
+  
+  addPolygons(
+    data        = wgs_da_21_peel,
+    weight      = lft_weight_poly,
+    color       = lft_color_green,
+    fillOpacity = 0.1) |> 
+  
+  # PHDZ
+  
+  addPolygons(
+    data        = wgs_phdz_24,
+    weight      = lft_weight_poly,
+    color       = lft_color_blue,
+    fillOpacity = 0) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            colors = c(lft_color_blue, lft_color_green),
+            labels = c("2024 Peel Health Data Zones", "2021 Dissemination Areas"),
+            title    = "Geographic Units",
+            opacity  = 1
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-da-2021-peel-health-data-zone.png")
+```
+
+### 2025 LHA
+
+```{r}
+# Local health area by DA
+
+pal <- colorFactor(
+  palette = "Accent",
+  domain = wgs_da_16_lha$PSG_LHA25)
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # DAs by LHA
+  
+  addPolygons(
+    data        = wgs_da_16_lha,
+    weight      = lft_weight_poly,
+    color       = ~ pal(PSG_LHA25),
+    fillOpacity = 0.25) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            pal      = pal,
+            values   = wgs_lha_25$PSG_LHA25,
+            title    = "2016 Dissemination Areas",
+            opacity  = 0.75
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-da-local-health-area.png")
+
+# Local health area boundary
+
+pal <- colorFactor(
+  palette = "Accent",
+  domain = wgs_lha_25$PSG_LHA25)
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # LHA
+  
+  addPolygons(
+    data        = wgs_lha_25,
+    weight      = lft_weight_poly,
+    color       = ~ pal(PSG_LHA25),
+    fillOpacity = 0.25) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            pal      = pal,
+            values   = wgs_lha_25$PSG_LHA25,
+            title    = "2025 Local Health Areas",
+            opacity  = 0.75
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-local-health-area.png")
+```
+
+### 2016 DA to LHA
+
+```{r}
+# 2016 DA and LHA
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # 2016 DA
+  
+  addPolygons(
+    data        = wgs_da_16_lha,
+    weight      = lft_weight_poly,
+    color       = lft_color_orange,
+    fillOpacity = 0.1) |> 
+  
+  # LHA
+  
+  addPolygons(
+    data        = wgs_lha_25,
+    weight      = lft_weight_poly,
+    color       = lft_color_blue,
+    fillOpacity = 0) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            colors = c(lft_color_blue, lft_color_orange),
+            labels = c("2025 Local Health Areas", "2016 Dissemination Areas"),
+            title    = "Geographic Units",
+            opacity  = 1
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-da-2016-local-health-area.png")
+```
+
+### 2021 DA to PHDZ
+
+```{r}
+# 2021 DA and LHA
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # 2021 DA
+  
+  addPolygons(
+    data        = wgs_da_21_lha,
+    weight      = lft_weight_poly,
+    color       = lft_color_green,
+    fillOpacity = 0.1) |> 
+  
+  # LHA
+  
+  addPolygons(
+    data        = wgs_lha_25,
+    weight      = lft_weight_poly,
+    color       = lft_color_blue,
+    fillOpacity = 0) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            colors = c(lft_color_blue, lft_color_green),
+            labels = c("2025 Local Health Areas", "2021 Dissemination Areas"),
+            title    = "Geographic Units",
+            opacity  = 1
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-da-2021-local-health-area.png")
+```
+
+### 2017 LHIN
+
+```{r}
+# 2017 LHIN
+
+pal <- colorFactor(
+  palette = "Accent",
+  domain = wgs_lhin_17_peel$LHIN_LHINSRNAME17)
+
+p <- leaflet(options = leafletOptions(zoomSnap = 0.5)) |> 
+  
+  # Map setup
+  
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  
+  # 2017 LHIN
+  
+  addPolygons(
+    data        = wgs_lhin_17_peel,
+    weight      = lft_weight_poly,
+    color       = ~ pal(LHIN_LHINSRNAME17),
+    fillOpacity = 0.25) |> 
+  
+  # Legend
+  
+  addLegend(position = "bottomright",
+            pal      = pal,
+            values   = wgs_lhin_17_peel$LHIN_LHINSRNAME17,
+            title    = "2017 LHIN Sub-Regions",
+            opacity  = 0.75
+  )
+
+p
+
+mapshot2(p, file    = "../Figures/map-lhin-subregion.png")
+```
+
+```{r}
+# Elapsed run time
+
+hms::as_hms(round((proc.time() - time_start)["elapsed"]))
+
+rm(list = ls())
+```
