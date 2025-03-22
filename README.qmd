@@ -103,7 +103,7 @@ The postal code crosswalk contains all active postal codes located within the Pe
 
 #### LHA Postal Codes
 
-To support additional analyses, the crosswalk also includes postal codes from the Mississauga North West, Mississauga East, Mississauga South West, Milton-Halton Hills, Oakville and Toronto South Etobicoke local health areas.
+To support additional analyses, the crosswalk also includes postal codes from the Mississauga North West, Mississauga East, Mississauga South West, Milton-Halton Hills, Oakville, and Toronto South Etobicoke local health areas.
 
 ![Postal codes in local health areas.](Figures/map-postal-codes-lha.png)
 
@@ -129,7 +129,7 @@ Geospatial Crosswalk/
 
 ### Dissemination Area Crosswalk
 
-DA linkages to CD, CSD, PHDZ, and LHA were performed using geographic data and spatial joins to associate DAs with higher-level geographies. Spatial joins were verified to reconcile geographic boundaries that are not perfectly nested or aligned and to ensure the completeness of DAs assigned to higher-level geographies.
+DA linkages to CD, CSD, PHDZ, and LHA were performed using geographic data and spatial joins to associate DAs with higher-level geographies. Spatial joins were checked manually and confirmed visually to reconcile geographic boundaries that were not perfectly nested or aligned and to ensure all DAs were completely and appropriately assigned to higher-level geographies.
 
 | Source   | Release Date | Census Geography | Type      | Variable                | Description |
 |----------|--------------|------------------|-----------|-------------------------|-------------|
@@ -196,7 +196,7 @@ Geospatial Crosswalk/
 
 ### Local Health Area Boundary File
 
-Local health areas are custom geographies defined using a proprietary PSG 2016 DA to 2025 LHA flat-file crosswalk. First, using the flat file, 2016 DAs were restricted to those within the Mississauga North West, Mississauga East, Mississauga South West, Milton-Halton Hills, Oakville and Toronto South Etobicoke local health areas. These 2016 DAs were then linked to StatCan 2016 DA boundary files, augmenting the flat file with geographic data.
+Local health areas are custom geographies defined using a proprietary PSG 2016 DA to 2025 LHA flat-file crosswalk. First, using the flat file, 2016 DAs were restricted to those within the Mississauga North West, Mississauga East, Mississauga South West, Milton-Halton Hills, Oakville, and Toronto South Etobicoke local health areas. These 2016 DAs were then linked to StatCan 2016 DA boundary files, augmenting the flat file with geographic data.
 
 ![2016 dissemination areas used to create 2025 local health area geographic boundaries.](Figures/map-da-local-health-area.png)
 
