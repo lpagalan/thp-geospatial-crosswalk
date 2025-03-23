@@ -200,7 +200,7 @@ Local health areas are custom geographies defined using a proprietary PSG 2016 D
 
 ![2016 dissemination areas used to create 2025 local health area geographic boundaries.](Figures/map-da-local-health-area.png)
 
-Lastly, the geographic boundaries of these 2016 DAs were dissolved and merged to form 2025 LHA geographic boundaries. Note that 2025 LHA boundaries were compared to 2017 Local Health Integration Network (LHIN) sub-regions and LHA and LHIN sub-region geographies differ.
+Lastly, the geographic boundaries of these 2016 DAs were dissolved and merged to form 2025 LHA geographic boundaries. Note that 2025 LHA boundaries were compared to 2017 Local Health Integration Network (LHIN) sub-regions, and LHA and LHIN sub-region geographies differ.
 
 ![2025 local health area geographic boundaries.](Figures/map-local-health-area.png)
 
